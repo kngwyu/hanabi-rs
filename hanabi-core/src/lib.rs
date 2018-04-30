@@ -18,6 +18,8 @@ use error::{CoreError, Error, ErrorKind, ResultExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use std::collections::HashSet;
 /// colors of hanabi cards
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, EnumIterator)]
 pub enum Color {
@@ -139,7 +141,13 @@ pub enum Action {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CardInfo {
     kind: CardInfoKind,
-    cards: Vec<CardId>,
+    player: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CardInfoInner {
+    kind: CardInfoKind,
+    cards: HashSet<CardId>,
     player: usize,
 }
 
@@ -194,7 +202,11 @@ pub struct Game {
 }
 
 impl Game {
-    fn process_action(&mut self, player: usize, act: Action) -> Result<(), Error> {
+    fn process_action(
+        &mut self,
+        player: usize,
+        act: Action,
+    ) -> Result<Option<CardInfoInner>, Error> {
         if !self.is_valid_player(player) {
             return Err(CoreError::InvalidPlayer(player).into_err());
         }
@@ -207,43 +219,54 @@ impl Game {
                 }
             };
         }
-        match act {
+        let res = match act {
             Action::Discard(id) => {
                 let card = get_card!(id);
                 self.discards.push(card);
+                None
             }
             Action::Play(id) => {
                 let card = get_card!(id);
                 if !self.field.add(card) {
                     return Err(CoreError::InvalidCard(id).into_err());
                 }
+                None
             }
-            Action::Tell(ref info) => if self.is_valid_info(info) {},
-        }
-        Ok(())
+            Action::Tell(ref info) => if let Some(cards) = self.construct_info(info) {
+                if cards.is_empty() {
+                    return Err(CoreError::IncorrectInfo(info.to_owned()).into_err());
+                }
+                let info_inner = CardInfoInner {
+                    kind: info.kind,
+                    player: info.player,
+                    cards,
+                };
+                Some(info_inner)
+            } else {
+                return Err(CoreError::IncorrectInfo(info.to_owned()).into_err());
+            },
+        };
+        Ok(res)
     }
     fn is_valid_player(&self, n: usize) -> bool {
         n < self.player_num
     }
-    fn is_valid_info(&self, info: &CardInfo) -> bool {
+    fn construct_info(&self, info: &CardInfo) -> Option<HashSet<CardId>> {
         if !self.is_valid_player(info.player) {
-            return false;
+            return None;
         }
-        let is_valid_card = |card: &Card| match info.kind {
+        let is_valid_card = |card: &&Card| match info.kind {
             CardInfoKind::Color(c) => card.color == c,
             CardInfoKind::Number(n) => card.number == n,
         };
-        info.cards.iter().all(|&card_id| {
-            if let Some(card) = self.players[info.player]
+        Some(
+            self.players[info.player]
                 .hands
                 .iter()
-                .find(|card| card_id == card.id)
-            {
-                is_valid_card(card)
-            } else {
-                false
-            }
-        })
+                .filter(is_valid_card)
+                .map(|card| card.id)
+                .collect(),
+        )
     }
 }
 
